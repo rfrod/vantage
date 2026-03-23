@@ -1,0 +1,25 @@
+# Vantage — Ticker Watchlist
+# One ticker per line. Lines starting with '#' are ignored.
+# Comma-separated or space-separated tickers on the same line are also supported.
+
+# --- Technology ---
+AAPL
+MSFT
+NVDA
+TSLA
+GOOGL
+META
+AMZN
+
+# --- Financials ---
+JPM
+GS
+BAC
+
+# --- Energy ---
+XOM
+CVX
+
+# --- Healthcare ---
+JNJ
+UNH
