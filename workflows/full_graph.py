@@ -66,25 +66,51 @@ def _print_state(node_name: str, state: GraphState, debug: bool):
 
 # ── Workflow factory ──────────────────────────────────────────────────────────
 
-def create_full_workflow(debug: bool = False):
+def create_full_workflow(debug: bool = False, min_sigma: int = 1):
+    """
+    Build and compile the full Vantage LangGraph workflow.
+
+    Parameters
+    ----------
+    debug : bool
+        When True, prints full agent outputs and state snapshots after each node.
+    min_sigma : int (1 or 2)
+        Minimum standard deviation threshold for an outlier to be processed.
+        - 1 : process all outliers (+, ++, -, --)
+        - 2 : process only strong outliers (++, --)
+    """
     workflow = StateGraph(GraphState)
 
     # ── 1. Quant Screening ────────────────────────────────────────────────
     def quant_screening_node(state: GraphState):
         tickers = state.get("tickers", [])
         screener = QuantScreener(verbose=debug)
-        outliers = screener.screen_tickers(tickers)
-        print(f"[Quant Screening] {len(outliers)} outlier(s) found out of {len(tickers)} ticker(s).")
+        all_outliers = screener.screen_tickers(tickers)
+
+        # Apply min_sigma filter
+        if min_sigma >= 2:
+            filtered = [o for o in all_outliers if o.classification in ("++", "--")]
+        else:
+            filtered = all_outliers
+
+        skipped = len(all_outliers) - len(filtered)
+        print(
+            f"[Quant Screening] {len(all_outliers)} outlier(s) found out of {len(tickers)} ticker(s). "
+            f"{len(filtered)} pass the min-sigma={min_sigma} filter"
+            + (f" ({skipped} skipped as single-sigma)." if skipped else ".")
+        )
         if debug:
-            for o in outliers:
+            for o in filtered:
                 print(f"  → {o.ticker}  [{o.classification}]")
-        new_state = {**state, "outliers": outliers}
+
+        new_state = {**state, "outliers": filtered}
         _print_state("quant_screening", new_state, debug)
-        return {"outliers": outliers}
+        return {"outliers": filtered}
 
     workflow.add_node("quant_screening", quant_screening_node)
 
     def check_outliers(state: GraphState):
+        """Route to pipeline if there are remaining outliers, otherwise end."""
         return "end" if not state.get("outliers") else "set_current_ticker"
 
     # ── 2. Set Current Ticker ─────────────────────────────────────────────
@@ -94,11 +120,41 @@ def create_full_workflow(debug: bool = False):
             new_state = {**state, "current_ticker": None}
             _print_state("set_current_ticker", new_state, debug)
             return {"current_ticker": None}
+
+        # Pop the first outlier from the queue to process it
         current = outliers[0]
-        print(f"\n[Pipeline] Processing ticker: {current.ticker}  [{current.classification}]")
-        new_state = {**state, "current_ticker": current, "specialist_reports": []}
+        remaining = outliers[1:]
+
+        total_processed = len(state.get("final_decisions", [])) + 1
+        total_queue = len(outliers)
+        print(
+            f"\n[Pipeline] Processing ticker {total_processed}/{total_queue + len(state.get('final_decisions', []))}: "
+            f"{current.ticker}  [{current.classification}]"
+            f"  ({len(remaining)} remaining in queue)"
+        )
+
+        new_state = {
+            **state,
+            "current_ticker": current,
+            "outliers": remaining,
+            "specialist_reports": [],
+            "synthesis": None,
+            "debate_history": [],
+            "debate_summary": None,
+            "risk_recommendations": [],
+            "risk_summary": None,
+        }
         _print_state("set_current_ticker", new_state, debug)
-        return {"current_ticker": current, "specialist_reports": []}
+        return {
+            "current_ticker": current,
+            "outliers": remaining,
+            "specialist_reports": [],
+            "synthesis": None,
+            "debate_history": [],
+            "debate_summary": None,
+            "risk_recommendations": [],
+            "risk_summary": None,
+        }
 
     workflow.add_node("set_current_ticker", set_current_ticker_node)
 
@@ -261,6 +317,7 @@ def create_full_workflow(debug: bool = False):
         with open(os.path.join(output_dir, f"{ticker.ticker}_report.json"), "w") as f:
             f.write(decision.model_dump_json(indent=2))
 
+        # Return only the new decision — operator.add reducer handles accumulation
         new_state = {**state, "final_decisions": state.get("final_decisions", []) + [decision]}
         _print_state("pm_decision", new_state, debug)
         return {"final_decisions": [decision]}
@@ -270,6 +327,7 @@ def create_full_workflow(debug: bool = False):
     # ── Graph Edges ───────────────────────────────────────────────────────
     workflow.set_entry_point("quant_screening")
 
+    # After screening: go to pipeline if outliers exist, else end
     workflow.add_conditional_edges(
         "quant_screening",
         check_outliers,
@@ -284,6 +342,13 @@ def create_full_workflow(debug: bool = False):
     workflow.add_edge("debate_moderator", "risk_analysis")
     workflow.add_edge("risk_analysis", "risk_committee")
     workflow.add_edge("risk_committee", "pm_decision")
-    workflow.add_edge("pm_decision", END)
+
+    # After PM decision: loop back to check_outliers to process the next ticker
+    # (set_current_ticker already popped the processed ticker from outliers)
+    workflow.add_conditional_edges(
+        "pm_decision",
+        check_outliers,
+        {"end": END, "set_current_ticker": "set_current_ticker"}
+    )
 
     return workflow.compile()

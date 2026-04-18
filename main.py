@@ -77,6 +77,17 @@ def parse_args():
              "before committing to a full research run.\n"
              "Compatible with --strict (exits with code 2 if no outliers found)."
     )
+    parser.add_argument(
+        "--min-sigma",
+        type=int,
+        choices=[1, 2],
+        default=1,
+        dest="min_sigma",
+        help="Minimum standard deviation threshold for an outlier to be analysed.\n"
+             "  1 (default): process all outliers (+, ++, -, --)\n"
+             "  2          : process only strong outliers (++, --) — 2-sigma events only\n"
+             "Applies to both the full pipeline and --screen-only mode."
+    )
     return parser.parse_args()
 
 
@@ -110,6 +121,7 @@ def main():
     print(f"  Debug       : {'ON' if args.debug else 'OFF'}")
     print(f"  Strict      : {'ON' if args.strict else 'OFF'}")
     print(f"  Screen Only : {'ON' if args.screen_only else 'OFF'}")
+    print(f"  Min Sigma   : {args.min_sigma} ({'strong outliers only (++/--)' if args.min_sigma == 2 else 'all outliers (+/++/-/--)'})") 
     print(f"{'='*60}\n")
 
     # ── Screen-only mode ──────────────────────────────────────────────────────
@@ -117,7 +129,16 @@ def main():
         from agents.quant_screener import QuantScreener
         print("[Screen Only] Running Quant Screening...\n")
         screener = QuantScreener(verbose=args.debug)
-        outliers = screener.screen_tickers(tickers)
+        all_outliers = screener.screen_tickers(tickers)
+
+        # Apply min_sigma filter
+        if args.min_sigma >= 2:
+            outliers = [o for o in all_outliers if o.classification in ("++", "--")]
+            skipped = len(all_outliers) - len(outliers)
+            if skipped:
+                print(f"[min-sigma=2] {skipped} single-sigma outlier(s) filtered out.")
+        else:
+            outliers = all_outliers
 
         if not outliers:
             msg = "No statistical outliers detected in the provided tickers."
@@ -143,7 +164,7 @@ def main():
         print(f"{'='*60}\n")
         return
 
-    workflow = create_full_workflow(debug=args.debug)
+    workflow = create_full_workflow(debug=args.debug, min_sigma=args.min_sigma)
 
     initial_state = {
         "tickers": tickers,
@@ -231,6 +252,8 @@ def main():
                 print(f"  Position Size:   {d.recommended_position_size}")
                 if d.recommended_strike_expiration and d.recommended_strike_expiration != "N/A":
                     print(f"  Strike/Exp:      {d.recommended_strike_expiration}")
+                if d.spread_details:
+                    print(f"  Spread Details:  {d.spread_details}")
                 print(f"\n  Top Reasons:")
                 for i, r in enumerate(d.top_3_reasons, 1):
                     print(f"    {i}. {r}")

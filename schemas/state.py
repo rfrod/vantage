@@ -41,7 +41,12 @@ class DebateSummary(BaseModel):
 class RiskRecommendation(BaseModel):
     persona: str = Field(description="Conservative, Neutral, or Aggressive")
     whether_to_trade: bool
-    trade_type: str = Field(description="Buy Stock, Sell Cash-Secured Put, or None")
+    trade_type: str = Field(
+        description=(
+            "One of: Buy Stock, Sell Cash-Secured Put, Buy Call, Buy Put, "
+            "Buy Call Spread, Buy Put Spread, Reduce/Trim, or None"
+        )
+    )
     suggested_position_size_pct: float
     max_loss_framing: str
     stop_review_conditions: str
@@ -55,24 +60,52 @@ class RiskSummary(BaseModel):
 
 class FinalDecision(BaseModel):
     ticker: str
-    final_action: str = Field(description="BUY STOCK, SELL CASH-SECURED PUT, WATCHLIST, or REJECT")
+    final_action: str = Field(
+        description=(
+            "One of: BUY STOCK, SELL CASH-SECURED PUT, BUY CALL, BUY PUT, "
+            "BUY CALL SPREAD, BUY PUT SPREAD, REDUCE/TRIM, WATCHLIST, or REJECT"
+        )
+    )
     confidence_score: int = Field(description="Confidence score from 1 to 10")
     top_3_reasons: List[str]
     top_3_risks: List[str]
     recommended_position_size: str
-    recommended_strike_expiration: str = Field(description="Strike/expiration if selling PUTs, otherwise 'N/A'")
+    recommended_strike_expiration: str = Field(
+        description=(
+            "For options actions: describe the recommended strike(s) and expiration. "
+            "For spreads: include both legs (e.g. 'Buy 150C / Sell 160C, 45 DTE'). "
+            "For stock actions or non-trade outcomes: 'N/A'."
+        )
+    )
+    spread_details: Optional[str] = Field(
+        default=None,
+        description=(
+            "For BUY CALL SPREAD or BUY PUT SPREAD only: describe both legs, "
+            "max profit, max loss, and breakeven. None for all other actions."
+        )
+    )
     what_to_monitor_next: List[str]
     audit_trail: List[str] = Field(description="Which agents influenced the decision most")
+
+def _replace(old, new):
+    """Reducer that replaces the existing list with the new one (used for per-ticker fields)."""
+    return new
+
 
 class GraphState(TypedDict):
     tickers: List[str]
     outliers: List[OutlierTicker]
     current_ticker: Optional[OutlierTicker]
-    specialist_reports: Annotated[List[SpecialistReport], operator.add]
+    # Per-ticker fields reset by set_current_ticker_node:
+    # specialist_reports is populated in one shot — use replace reducer
+    specialist_reports: Annotated[List[SpecialistReport], _replace]
     synthesis: Optional[SynthesisReport]
+    # debate_history and risk_recommendations are built incrementally across nodes
+    # — use append reducer; reset to [] by set_current_ticker_node each new ticker
     debate_history: Annotated[List[DebateTurn], operator.add]
     debate_summary: Optional[DebateSummary]
     risk_recommendations: Annotated[List[RiskRecommendation], operator.add]
     risk_summary: Optional[RiskSummary]
+    # Cross-ticker accumulator: appended across all tickers
     final_decisions: Annotated[List[FinalDecision], operator.add]
     errors: Annotated[List[str], operator.add]

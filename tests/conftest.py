@@ -83,6 +83,7 @@ def _make_pydantic_objects():
         top_3_risks=["X", "Y", "Z"],
         recommended_position_size="5%",
         recommended_strike_expiration="N/A",
+        spread_details=None,
         what_to_monitor_next=["Earnings"],
         audit_trail=["Market", "Fundamentals"],
     )

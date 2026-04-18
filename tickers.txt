@@ -18,7 +18,8 @@ BAC
 
 # --- Energy ---
 XOM
-CVX
+CVX     
+AOS
 
 # --- Healthcare ---
 JNJ

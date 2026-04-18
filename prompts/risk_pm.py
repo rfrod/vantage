@@ -16,9 +16,9 @@ RISK_ANALYST_AGGRESSIVE_PROMPT = """You are the Aggressive Risk Analyst.
 RISK_ANALYST_COMMON_PROMPT = """
 Each one should recommend:
 - whether to trade
-- whether to buy stock or sell cash-secured puts
-- suggested position size as % of portfolio
-- max loss framing
+- the trade type (Buy Stock, Sell Cash-Secured Put, Buy Call, Buy Put, Buy Call Spread, Buy Put Spread, Reduce/Trim, or None)
+- suggested position size as % of portfolio (must account for the leverage of options vs stock)
+- max loss framing (e.g., 100% of premium for options, stop-loss distance for stock)
 - stop / review conditions
 - what would invalidate the thesis"""
 
@@ -34,5 +34,15 @@ Make the final decision using:
 - risk sizing recommendations
 - compliance / quality flags
 
-Decide one of the following: BUY STOCK, SELL CASH-SECURED PUT, WATCHLIST, REJECT.
-Output must be structured as requested."""
+Decide one of the following actions:
+1. BUY STOCK: Strong bullish conviction, clean technicals, positive fundamentals.
+2. SELL CASH-SECURED PUT: Mildly bullish/neutral, want income, willing to own at lower price.
+3. BUY CALL: Strong bullish conviction but prefer defined-risk leverage over owning stock outright (or IV is low).
+4. BUY PUT: Strong bearish conviction, want to express a downside view with defined risk.
+5. BUY CALL SPREAD: Bullish but IV is elevated — reduces cost vs outright call.
+6. BUY PUT SPREAD: Bearish but IV is elevated — reduces cost vs outright put.
+7. REDUCE/TRIM: Already in a position (assumed), thesis is weakening — partial exit signal.
+8. WATCHLIST: Thesis is forming but not ready — revisit in N days.
+9. REJECT: No edge, compliance flag, or too risky.
+
+Output must be structured exactly as requested in the schema."""

@@ -210,6 +210,11 @@ class TestDebateAgents:
 
 # ── Risk Agents ───────────────────────────────────────────────────────────────
 
+VALID_TRADE_TYPES = {
+    "Buy Stock", "Sell Cash-Secured Put", "Buy Call", "Buy Put",
+    "Buy Call Spread", "Buy Put Spread", "Reduce/Trim", "None"
+}
+
 class TestRiskAgents:
     @pytest.mark.parametrize("persona", ["Conservative", "Neutral", "Aggressive"])
     def test_risk_analyst_personas(self, mock_openai, sample_ticker, sample_synthesis, sample_debate_summary, persona):
@@ -217,6 +222,7 @@ class TestRiskAgents:
         assert isinstance(rec, RiskRecommendation)
         assert rec.whether_to_trade in [True, False]
         assert rec.suggested_position_size_pct >= 0
+        assert rec.trade_type in VALID_TRADE_TYPES
 
     def test_risk_committee_chair(self, mock_openai, sample_ticker, sample_risk_recs):
         summary = RiskCommitteeChair().summarize(sample_ticker, sample_risk_recs)
@@ -224,7 +230,12 @@ class TestRiskAgents:
         assert summary.committee_consensus != ""
 
 
-# ── PortfolioManager ──────────────────────────────────────────────────────────
+VALID_FINAL_ACTIONS = {
+    "BUY STOCK", "SELL CASH-SECURED PUT", "BUY CALL", "BUY PUT",
+    "BUY CALL SPREAD", "BUY PUT SPREAD", "REDUCE/TRIM", "WATCHLIST", "REJECT"
+}
+
+# ── PortfolioManager ───────────────────────────────────────────────────────────────
 
 class TestPortfolioManager:
     def test_make_decision_returns_final_decision(
@@ -234,9 +245,7 @@ class TestPortfolioManager:
             sample_ticker, sample_synthesis, sample_debate_summary, sample_risk_summary
         )
         assert isinstance(decision, FinalDecision)
-        assert decision.final_action in [
-            "BUY STOCK", "SELL CASH-SECURED PUT", "WATCHLIST", "REJECT", "BUY STOCK"
-        ]
+        assert decision.final_action in VALID_FINAL_ACTIONS
         assert 1 <= decision.confidence_score <= 10
 
     def test_decision_has_audit_trail(
@@ -249,3 +258,17 @@ class TestPortfolioManager:
         assert len(decision.top_3_reasons) == 3
         assert len(decision.top_3_risks) == 3
         assert len(decision.what_to_monitor_next) > 0
+
+    def test_spread_decision_has_spread_details(
+        self, mock_openai, sample_ticker, sample_synthesis, sample_debate_summary, sample_risk_summary
+    ):
+        """When the mock returns a spread action, spread_details should be populated."""
+        decision = PortfolioManager().make_decision(
+            sample_ticker, sample_synthesis, sample_debate_summary, sample_risk_summary
+        )
+        # spread_details is Optional — if action is a spread, it should be non-None
+        if decision.final_action in {"BUY CALL SPREAD", "BUY PUT SPREAD"}:
+            assert decision.spread_details is not None
+        else:
+            # For non-spread actions, spread_details may be None or absent
+            assert decision.spread_details is None or isinstance(decision.spread_details, str)

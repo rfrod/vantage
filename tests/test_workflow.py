@@ -8,9 +8,11 @@ import pytest
 import pandas as pd
 import numpy as np
 import datetime
+from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workflows.full_graph import create_full_workflow
+from schemas.state import OutlierTicker
 
 
 def _base_state(tickers):
@@ -41,15 +43,11 @@ class TestFullWorkflow:
         tmp_path,
         monkeypatch,
     ):
-        """Full pipeline runs end-to-end and produces a FinalDecision."""
+        """Full pipeline runs end-to-end and produces a FinalDecision for a single ticker."""
         monkeypatch.chdir(tmp_path)
 
         workflow = create_full_workflow(debug=False)
         final_state = workflow.invoke(_base_state(["AAPL"]))
-
-        # Quant screening
-        assert len(final_state["outliers"]) > 0
-        assert final_state["outliers"][0].ticker == "AAPL"
 
         # Specialist analysis — 8 agents
         assert len(final_state["specialist_reports"]) == 8
@@ -76,10 +74,8 @@ class TestFullWorkflow:
         monkeypatch,
     ):
         """When no outlier is detected, the pipeline terminates after quant screening."""
-        from unittest.mock import patch
         monkeypatch.chdir(tmp_path)
 
-        # Mock QuantScreener.screen_tickers to return an empty list directly
         with patch("workflows.full_graph.QuantScreener") as mock_screener_cls:
             mock_screener = mock_screener_cls.return_value
             mock_screener.screen_tickers.return_value = []
@@ -116,7 +112,7 @@ class TestFullWorkflow:
         assert "[DEBUG]" in captured.out
         assert len(final_state["final_decisions"]) == 1
 
-    def test_multiple_tickers_produce_multiple_decisions(
+    def test_multiple_tickers_all_processed(
         self,
         mock_openai,
         mock_yf_ticker,
@@ -128,23 +124,92 @@ class TestFullWorkflow:
         monkeypatch,
     ):
         """
-        The graph detects multiple outliers but processes one ticker per run
-        (the first outlier in the list). Verify that:
-          - Both tickers are detected as outliers by the screener
-          - At least one FinalDecision is produced
-          - The processed ticker is one of the two submitted
+        When the QuantScreener returns multiple outliers, the graph loops and
+        produces a FinalDecision for EACH outlier.
+        Note: the mock LLM always returns ticker='AAPL' in FinalDecision regardless
+        of the current ticker — we verify count and empty queue, not ticker names.
         """
         monkeypatch.chdir(tmp_path)
 
-        workflow = create_full_workflow(debug=False)
-        final_state = workflow.invoke(_base_state(["AAPL", "MSFT"]))
+        # Inject two outliers directly so the loop runs twice
+        with patch("workflows.full_graph.QuantScreener") as mock_screener_cls:
+            mock_screener = mock_screener_cls.return_value
+            mock_screener.screen_tickers.return_value = [
+                OutlierTicker(ticker="AAPL", classification="++"),
+                OutlierTicker(ticker="MSFT", classification="--"),
+            ]
 
-        # Both tickers should be detected as outliers
-        assert len(final_state["outliers"]) == 2
-        outlier_tickers = {o.ticker for o in final_state["outliers"]}
-        assert "AAPL" in outlier_tickers
-        assert "MSFT" in outlier_tickers
+            workflow = create_full_workflow(debug=False)
+            final_state = workflow.invoke(_base_state(["AAPL", "MSFT"]))
 
-        # The graph processes the first outlier in a single run
-        assert len(final_state["final_decisions"]) >= 1
-        assert final_state["final_decisions"][0].ticker in {"AAPL", "MSFT"}
+        # Both tickers must have been processed — 2 decisions produced
+        assert len(final_state["final_decisions"]) == 2
+
+        # Outliers queue should be empty after the loop
+        assert len(final_state["outliers"]) == 0
+
+        # Each run should have produced exactly 8 specialist reports (not accumulated)
+        assert len(final_state["specialist_reports"]) == 8
+
+    def test_min_sigma_2_filters_single_sigma(
+        self,
+        mock_openai,
+        mock_yf_ticker,
+        mock_yf_download,
+        mock_subprocess,
+        mock_requests,
+        mock_time_sleep,
+        tmp_path,
+        monkeypatch,
+    ):
+        """
+        With min_sigma=2, single-sigma outliers (+/-) are filtered out.
+        Only ++ and -- outliers proceed to the full pipeline.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        with patch("workflows.full_graph.QuantScreener") as mock_screener_cls:
+            mock_screener = mock_screener_cls.return_value
+            # Return one strong and one weak outlier
+            mock_screener.screen_tickers.return_value = [
+                OutlierTicker(ticker="NVDA", classification="++"),  # strong — should pass
+                OutlierTicker(ticker="TSLA", classification="+"),   # weak — should be filtered
+            ]
+
+            workflow = create_full_workflow(debug=False, min_sigma=2)
+            final_state = workflow.invoke(_base_state(["NVDA", "TSLA"]))
+
+        # Only the strong outlier (NVDA) should have been processed — 1 decision
+        assert len(final_state["final_decisions"]) == 1
+        # The outliers queue should be empty (TSLA was filtered, NVDA was processed)
+        assert len(final_state["outliers"]) == 0
+
+    def test_min_sigma_1_passes_all_outliers(
+        self,
+        mock_openai,
+        mock_yf_ticker,
+        mock_yf_download,
+        mock_subprocess,
+        mock_requests,
+        mock_time_sleep,
+        tmp_path,
+        monkeypatch,
+    ):
+        """
+        With min_sigma=1 (default), all outliers (+, ++, -, --) are processed.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        with patch("workflows.full_graph.QuantScreener") as mock_screener_cls:
+            mock_screener = mock_screener_cls.return_value
+            mock_screener.screen_tickers.return_value = [
+                OutlierTicker(ticker="AAPL", classification="+"),
+                OutlierTicker(ticker="TSLA", classification="-"),
+            ]
+
+            workflow = create_full_workflow(debug=False, min_sigma=1)
+            final_state = workflow.invoke(_base_state(["AAPL", "TSLA"]))
+
+        # Both single-sigma outliers should have been processed
+        assert len(final_state["final_decisions"]) == 2
+        assert len(final_state["outliers"]) == 0
